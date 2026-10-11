@@ -1905,8 +1905,14 @@ async function help() {
     dario proxy [options]    Start the API proxy server. Flags only: a bare
                              word after "proxy" is an error, and "dario proxy
                              status" prints the report instead of starting.
+    dario start [options]    Run the proxy in the background, bound to
+                             0.0.0.0 for a VPS. Mints DARIO_API_KEY into
+                             ~/.dario/api-key when the environment has none
+                             and prints the base URL and key. Takes the
+                             proxy flags. Log: ~/.dario/dario.log
+    dario stop               Stop the proxy \`dario start\` started
     dario status             Check authentication status
-    dario refresh            Force token refresh
+    dario refresh           Force token refresh
     dario resume             Clear the overage-guard halt on a running proxy.
                              v4.1.0+. Idempotent: returns "no-op" if the
                              proxy isn't halted. Errors with a friendly hint
@@ -3133,9 +3139,124 @@ async function compare(): Promise<void> {
   for (const line of formatCompareReport(summary, dir)) console.log(line);
 }
 
+/**
+ * `dario start` / `dario stop` — the proxy as a background service on a
+ * server. `start` runs `dario proxy` detached, logging to ~/.dario/dario.log,
+ * bound to 0.0.0.0 unless --host / DARIO_HOST / the config file says
+ * otherwise. A public bind needs DARIO_API_KEY (dario#74), so when the
+ * environment has none, `start` mints one into ~/.dario/api-key (0600) and
+ * reuses it on every later start; delete the file to rotate it. Other proxy
+ * flags pass through. Named keys (`dario keys create`) work beside it.
+ */
+const DAEMON_PID_PATH = join(homedir(), '.dario', 'dario.pid');
+const DAEMON_LOG_PATH = join(homedir(), '.dario', 'dario.log');
+const DAEMON_KEY_PATH = join(homedir(), '.dario', 'api-key');
+
+function daemonPid(): number | null {
+  try {
+    const pid = parseInt(readFileSync(DAEMON_PID_PATH, 'utf8'), 10);
+    process.kill(pid, 0);
+    return pid;
+  } catch {
+    return null;
+  }
+}
+
+async function start(): Promise<void> {
+  const running = daemonPid();
+  if (running) {
+    console.log(`[dario] Already running (pid ${running}). \`dario stop\` stops it; log: ${DAEMON_LOG_PATH}`);
+    return;
+  }
+  const { spawn } = await import('node:child_process');
+  const { randomBytes } = await import('node:crypto');
+  const { mkdirSync, openSync, writeFileSync } = await import('node:fs');
+  const { networkInterfaces } = await import('node:os');
+  const { loadConfig, DEFAULT_CONFIG_PATH } = await import('./config-file.js');
+  mkdirSync(join(homedir(), '.dario'), { recursive: true, mode: 0o700 });
+
+  let apiKey = process.env['DARIO_API_KEY'] || '';
+  let minted = false;
+  if (!apiKey) {
+    try { apiKey = readFileSync(DAEMON_KEY_PATH, 'utf8').trim(); } catch { /* first start */ }
+    if (!apiKey) {
+      apiKey = randomBytes(32).toString('hex');
+      writeFileSync(DAEMON_KEY_PATH, apiKey + '\n', { mode: 0o600 });
+      minted = true;
+    }
+  }
+
+  // Same precedence as `dario proxy`, resolved here so the URL printed below is the bound one.
+  // loadConfig() fills in the loopback default, so the file's own host is read raw.
+  const fileCfg = loadConfig().config;
+  let fileHost: string | undefined;
+  try { fileHost = JSON.parse(readFileSync(DEFAULT_CONFIG_PATH, 'utf8')).host; } catch { /* no file */ }
+  const flag = (name: string) => args.find(a => a.startsWith(`--${name}=`))?.split('=')[1];
+  const host = flag('host') ?? (process.env['DARIO_HOST'] || (typeof fileHost === 'string' && fileHost) || '0.0.0.0');
+  const port = parseInt(flag('port') ?? process.env['DARIO_PORT'] ?? String(fileCfg.port ?? 3456), 10);
+  const passthrough = args.slice(1).filter(a => !a.startsWith('--host=') && !a.startsWith('--port=') && a !== '--no-tui');
+
+  const log = openSync(DAEMON_LOG_PATH, 'a', 0o600);
+  const child = spawn(process.execPath, [process.argv[1]!, 'proxy', `--host=${host}`, `--port=${port}`, ...passthrough], {
+    detached: true,
+    stdio: ['ignore', log, log],
+    env: { ...process.env, DARIO_API_KEY: apiKey },
+  });
+  child.unref();
+  writeFileSync(DAEMON_PID_PATH, String(child.pid));
+
+  // Wait for /health so a proxy that dies at startup (no login, port taken) is reported here, not found later.
+  let exited = false;
+  child.on('exit', () => { exited = true; });
+  const probeHost = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host.includes(':') ? `[${host}]` : host;
+  let healthy = false;
+  for (let i = 0; i < 60 && !exited && !healthy; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    healthy = await fetch(`http://${probeHost}:${port}/health`, { signal: AbortSignal.timeout(1000) }).then(() => true, () => false);
+  }
+  if (exited) {
+    console.error(`[dario] The proxy exited during startup. Last lines of ${DAEMON_LOG_PATH}:`);
+    console.error(readFileSync(DAEMON_LOG_PATH, 'utf8').trimEnd().split('\n').slice(-15).join('\n'));
+    process.exit(1);
+  }
+
+  const publicHost = host === '0.0.0.0' || host === '::'
+    ? Object.values(networkInterfaces()).flat().find(i => i && i.family === 'IPv4' && !i.internal)?.address ?? 'localhost'
+    : host;
+  const baseUrl = `http://${publicHost}:${port}`;
+  console.log('');
+  console.log(`  dario ${healthy ? 'running' : 'still starting'} in the background (pid ${child.pid})`);
+  console.log(`  Log:       ${DAEMON_LOG_PATH}`);
+  console.log(`  Base URL:  ${baseUrl}            (Anthropic)`);
+  console.log(`             ${baseUrl}/v1         (OpenAI)`);
+  console.log(`  API key:   ${minted ? apiKey + '   (new; saved to ' + DAEMON_KEY_PATH + ')' : process.env['DARIO_API_KEY'] ? 'DARIO_API_KEY from the environment' : 'in ' + DAEMON_KEY_PATH}`);
+  console.log('');
+  console.log(`  Claude Code:  ANTHROPIC_BASE_URL=${baseUrl} ANTHROPIC_API_KEY=<key> claude`);
+  console.log(`  OpenAI SDKs:  OPENAI_BASE_URL=${baseUrl}/v1 OPENAI_API_KEY=<key>`);
+  console.log('  One key per device: `dario keys create <name>`. Open the port in the VPS firewall;');
+  console.log('  the traffic is plain HTTP, so put a TLS reverse proxy in front for anything beyond testing.');
+  console.log('');
+}
+
+async function stop(): Promise<void> {
+  const pid = daemonPid();
+  if (!pid) {
+    console.log('[dario] Not running.');
+    return;
+  }
+  // The whole process group: on Node with Bun on PATH, the pid is a launcher whose bun child serves.
+  try { process.kill(-pid, 'SIGTERM'); } catch { process.kill(pid, 'SIGTERM'); }
+  for (let i = 0; i < 40 && daemonPid(); i++) await new Promise(r => setTimeout(r, 250));
+  const { rmSync } = await import('node:fs');
+  rmSync(DAEMON_PID_PATH, { force: true });
+  console.log(`[dario] Stopped (pid ${pid}).`);
+}
+
 const commands: Record<string, () => Promise<void>> = {
   login,
   status,
+  start,
+  stop,
   proxy,
   refresh,
   resume,

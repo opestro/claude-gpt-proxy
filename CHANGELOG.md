@@ -13,6 +13,7 @@ and CI fails a bump that strands one.
 
 ## [Unreleased]
 
+- **`dario start` and `dario stop` run the proxy in the background on a VPS.** `start` binds `0.0.0.0` by default, mints a `DARIO_API_KEY` into `~/.dario/api-key` when the environment has none, waits for `/health` and prints the base URL for both wire shapes plus the key. A proxy that dies at startup is reported with the tail of `~/.dario/dario.log` instead of exiting silently. Proxy flags pass through.
 - **The Codex drift watcher's snapshot step no longer fails after opening its PR.** The pointer it leaves on an open `codex-drift` issue, and the close of an obsolete snapshot PR, now use the job token. Under the bot PAT the issue comment was refused and the step exited 1 with the PR already open (run 37999913237). The PAT needs only Contents and Pull requests.
 
 ## [6.13.11] - 2026-10-09
