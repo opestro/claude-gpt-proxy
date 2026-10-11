@@ -23,6 +23,7 @@ import { Ledger, resolveLedgerPath, ledgerDisabledByEnv } from './ledger.js';
 import { renderPrometheus } from './metrics.js';
 import { renderSpendDonuts, renderAnalyticsView, ANALYTICS_UI_SHELL } from './donuts.js';
 import { KeyStore, keyAllowsModel, resolveKeysPath, looksLikeNamedKey, budgetVerdict, budgetHeaders, formatBudget, requestBudgetReservation, addReservation, subtractReservation, EMPTY_RESERVATION, type KeyRecord, type KeyBudgetReservation, type KeySocket } from './keys.js';
+import { TraceStore } from './traces.js';
 import { OverageGuard, buildHaltErrorBody, type HaltState } from './overage-guard.js';
 import { notify as osNotify } from './notify.js';
 import { grantAge, grantThresholds, worstGrantLevel, describeGrantAge, type GrantLevel } from './refresh-grant.js';
@@ -1152,6 +1153,12 @@ interface ProxyOptions {
    */
   ledger?: boolean;
   /**
+   * Traces (src/traces.ts): every /v1/ request and response verbatim, in a
+   * per-day SQLite file under `~/.dario/traces`, readable at GET /traces.
+   * Off by default — it stores whole conversations. `--traces` / `DARIO_TRACES=1`.
+   */
+  traces?: boolean;
+  /**
    * Named keys (v6.8, src/keys.ts, dario#1318): per-developer credentials
    * in `~/.dario/keys.json`, hashes only, re-read when the file moves. A
    * request that authenticates with one is attributed to it in /analytics,
@@ -2050,6 +2057,8 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   // /analytics reports `lifetime: null`.
   const ledgerOn = opts.ledger !== false && !ledgerDisabledByEnv();
   const ledger: Ledger | null = ledgerOn ? await Ledger.open(resolveLedgerPath(port), (line) => console.log(line)) : null;
+  const traceStore = opts.traces ? await TraceStore.open() : null;
+  if (traceStore) console.log(`[dario] traces: on — ${traceStore.dir}, one file per ${traceStore.tz} day; read at GET /traces`);
   if (ledger) {
     analytics.on('record', (r: RequestRecord) => { ledger.add(r); });
     if (verbose) console.log(`[dario] ledger: ${ledger.path}`);
@@ -3257,6 +3266,32 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       return;
     }
 
+    // Tapped here, on the raw response, so every API answer is recorded as
+    // the client got it — errors, streams, and the Responses translation.
+    const trace = traceStore && urlPath.startsWith('/v1/') ? traceStore.begin(req, res, arrivedAt, requestAuth.key?.name) : null;
+
+    // Traces read API. The root key only: a named key is one developer's
+    // credential and the traces hold everyone's conversations.
+    if (traceStore && (urlPath === '/traces' || urlPath.startsWith('/traces/')) && req.method === 'GET') {
+      if (requestAuth.key) {
+        res.writeHead(403, JSON_HEADERS);
+        res.end(JSON.stringify({ error: 'Forbidden', message: 'traces are readable with the root DARIO_API_KEY only' }));
+        return;
+      }
+      const q = new URL(req.url ?? '', 'http://dario').searchParams;
+      const num = (k: string) => { const v = q.get(k); return v !== null && /^\d+$/.test(v) ? parseInt(v, 10) : undefined; };
+      if (urlPath === '/traces') {
+        res.writeHead(200, JSON_HEADERS);
+        res.end(JSON.stringify({ ...traceStore.info(), traces: traceStore.list({ limit: num('limit'), before: num('before'), status: num('status'), path: q.get('path') ?? undefined }) }));
+        return;
+      }
+      const id = /^\/traces\/(\d+)$/.exec(urlPath)?.[1];
+      const row = id ? traceStore.get(parseInt(id, 10)) : null;
+      res.writeHead(row ? 200 : 404, JSON_HEADERS);
+      res.end(JSON.stringify(row ?? { error: 'Not found', message: 'no trace with that id today' }));
+      return;
+    }
+
     // Status endpoint
     if (urlPath === '/status') {
       const s = await currentStatus();
@@ -4001,6 +4036,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         clearTimeout(bodyTimeout);
       }
       let body = Buffer.concat(chunks);
+      if (trace) trace.requestBody = body;
       // The request exactly as the client sent it. `body` is rewritten below
       // (aliases, prefixes, the CC template); a mid-stream continuation
       // re-issues the CLIENT's request, not the rewritten one, so dario's own
@@ -6656,7 +6692,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       () => waitForIdle(() => queue.snapshot().active, { graceMs }),
       {
         before: [flushPoolTokens, () => ledger?.flush()],
-        after: [() => ledger?.close(), () => keyStore?.close(), () => { if (logFileStream) logFileStream.end(); }],
+        after: [() => ledger?.close(), () => keyStore?.close(), () => traceStore?.close(),() => { if (logFileStream) logFileStream.end(); }],
       },
     ).finally(() => process.exit(0));
     setTimeout(() => process.exit(0), forceExitMs).unref();

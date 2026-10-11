@@ -754,6 +754,10 @@ async function proxy() {
   const ledger = !(args.includes('--no-ledger')
     || ['0', 'false', 'no', 'off'].includes((process.env['DARIO_LEDGER'] ?? '').toLowerCase()));
 
+  // --traces / DARIO_TRACES=1 — record requests and responses (ProxyOptions.traces). Off by default.
+  const traces = args.includes('--traces')
+    || ['1', 'true', 'yes', 'on'].includes((process.env['DARIO_TRACES'] ?? '').toLowerCase());
+
   // --no-keys / DARIO_KEYS=0 — ignore ~/.dario/keys.json (v6.8, dario#1318);
   // --keys-path=<file> / DARIO_KEYS_PATH moves it. See ProxyOptions.keys.
   const keys = !(args.includes('--no-keys')
@@ -811,7 +815,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, keys, keysPath, keySockets: keySockets.length > 0 ? keySockets : undefined });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, traces, keys, keysPath, keySockets: keySockets.length > 0 ? keySockets : undefined });
 }
 
 /**
@@ -2191,7 +2195,14 @@ async function help() {
                              first request, across restarts. Env:
                              DARIO_LEDGER=0; DARIO_LEDGER_PATH=<file>
                              moves it. (v6.6)
-    --no-keys                Ignore named keys (~/.dario/keys.json): only
+    --traces                 Record every /v1/ request and response
+                             verbatim in SQLite (~/.dario/traces), one
+                             file per day in DARIO_TRACES_TZ (default
+                             Africa/Algiers), older days deleted. Read at
+                             GET /traces and /traces/<id> with the root
+                             DARIO_API_KEY. Stores whole conversations.
+                             Needs Node >= 22.13 or Bun. Env: DARIO_TRACES=1.
+    --no-keys               Ignore named keys (~/.dario/keys.json): only
                              DARIO_API_KEY authenticates. Env: DARIO_KEYS=0;
                              --keys-path=<file> / DARIO_KEYS_PATH moves the
                              file. See \`dario keys\`. (v6.8)
