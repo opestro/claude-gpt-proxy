@@ -17,6 +17,7 @@
 import { startProxy } from '../dist/proxy.js';
 import { forwardClientCCIdentityHeaders } from '../dist/cc-template.js';
 import { freePort } from './helpers/free-port.mjs';
+import { arch, platform } from 'node:process';
 
 let pass = 0;
 let fail = 0;
@@ -90,6 +91,13 @@ header('3. value handling');
     !('x-app' in forwardClientCCIdentityHeaders({ 'x-app': undefined })));
   check('uppercase header names are matched case-insensitively',
     forwardClientCCIdentityHeaders({ 'X-Stainless-OS': 'Linux' })['x-stainless-os'] === 'Linux');
+  const hosted = forwardClientCCIdentityHeaders(
+    { 'x-stainless-os': 'Windows', 'x-app': 'cli' },
+    { 'x-stainless-os': 'Linux', 'x-stainless-arch': 'x64' },
+  );
+  check('host value replaces the client machine value', hosted['x-stainless-os'] === 'Linux');
+  check('host value is not added when the client sent none', !('x-stainless-arch' in hosted));
+  check('headers without a host value pass through', hosted['x-app'] === 'cli');
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -153,13 +161,69 @@ header('4. live request through the real proxy (the layer that caught the bug)')
 
   check('upstream request was captured', upstream !== null);
   if (upstream) {
+    const HOST_OWNED = {
+      'x-stainless-os': platform === 'win32' ? 'Windows' : platform === 'darwin' ? 'MacOS' : 'Linux',
+      'x-stainless-arch': arch,
+    };
     for (const [k, sent] of Object.entries(SENTINELS)) {
-      check(`${k} reached upstream unchanged`, upstream.headers[k] === sent);
+      if (k in HOST_OWNED) check(`${k} is the dario host's, not the client's`, upstream.headers[k] === HOST_OWNED[k]);
+      else check(`${k} reached upstream unchanged`, upstream.headers[k] === sent);
     }
     // dario must still own these even though the client sent its own.
     check('session id is dario’s, not the client’s', upstream.headers['x-claude-code-session-id'] !== undefined);
     check('upstream auth is the configured key, not the client’s',
       upstream.headers['x-api-key'] === 'sk-ant-test-not-a-real-key');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+header('5. --single-host: the client machine never reaches upstream');
+{
+  const PORT = await freePort();
+  let upstream = null;
+  await startProxy({
+    port: PORT, host: '127.0.0.1',
+    upstreamApiKey: 'sk-ant-test-not-a-real-key',
+    noClaudeAuth: true,
+    singleHost: true,
+    fetchImpl: async (url, init) => {
+      if (String(url).includes('/v1/messages')) upstream = Object.fromEntries((Array.isArray(init.headers) ? init.headers : Object.entries(init.headers)).map(([k, v]) => [String(k).toLowerCase(), String(v)]));
+      return new Response(JSON.stringify({
+        id: 'msg_test', type: 'message', role: 'assistant', model: 'claude-opus-4-8',
+        content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  for (let i = 0; i < 50; i++) {
+    try { await fetch(`http://127.0.0.1:${PORT}/health`); break; } catch { await new Promise((r) => setTimeout(r, 100)); }
+  }
+  const remote = {
+    'user-agent': 'claude-cli/0.0.1 (external, REMOTE)',
+    'x-stainless-os': 'REMOTE-OS',
+    'x-stainless-runtime-version': 'REMOTE-RT',
+    'x-stainless-package-version': 'REMOTE-PKG',
+    'x-claude-code-agent-id': 'agent-1',
+  };
+  const res = await fetch(`http://127.0.0.1:${PORT}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': 'dario', ...remote },
+    body: JSON.stringify({
+      model: 'claude-opus-4-8', max_tokens: 64,
+      messages: [{ role: 'user', content: 'hi' }],
+      system: [
+        { type: 'text', text: 'x-anthropic-billing-header: cli' },
+        { type: 'text', text: 'You are Claude Code, Anthropic official CLI for Claude.' },
+      ],
+    }),
+  });
+  await res.text();
+  check('upstream request was captured', upstream !== null);
+  if (upstream) {
+    for (const k of ['user-agent', 'x-stainless-os', 'x-stainless-runtime-version', 'x-stainless-package-version']) {
+      check(`${k} is not the remote client's`, upstream[k] !== undefined && upstream[k] !== remote[k]);
+    }
+    check('per-request x-claude-code-* still forwarded', upstream['x-claude-code-agent-id'] === 'agent-1');
   }
 }
 

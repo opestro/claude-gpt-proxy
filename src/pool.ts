@@ -226,6 +226,15 @@ export function describeRejection(rl: RateLimitSnapshot, now: number = Date.now(
   return `429 without an exhausted window (5h ${Math.round(rl.util5h * 100)}%, 7d ${Math.round(rl.util7d * 100)}%, claim ${rl.claim}; ${stated}) — cooling ${formatDurationMs(cool)}, seat stays probeable`;
 }
 
+/**
+ * The message every quota-exhausted 429 carries, whether dario answered it
+ * (all seats parked, every provider cooled) or Anthropic did. One wording on
+ * every path, with the reset as an absolute UTC time and as a wait.
+ */
+export function quotaExhaustedMessage(resetAtMs: number, now: number = Date.now()): string {
+  return `Load is at peak, please come back later. Quota resets at ${new Date(resetAtMs).toISOString()} (in ${formatDurationMs(resetAtMs - now)}).`;
+}
+
 function formatDurationMs(ms: number): string {
   const totalMins = Math.max(1, Math.round(ms / 60_000));
   const h = Math.floor(totalMins / 60);

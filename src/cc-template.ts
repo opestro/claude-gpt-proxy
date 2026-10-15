@@ -410,9 +410,16 @@ const NEVER_FORWARD_FROM_CLIENT = new Set<string>([
  * `overlayTemplateHeaderValues`. Array-valued headers (Node allows repeats)
  * take the first value; empty strings are skipped so a client sending a blank
  * header cannot blank out a value dario would otherwise supply.
+ *
+ * `host` rewrites a forwarded header to dario's own value. `x-stainless-os` /
+ * `x-stainless-arch` describe the machine the client runs on, and the account's
+ * device_id in `metadata.user_id` is the dario host's, so a remote Windows CC
+ * behind a Linux dario announced Windows next to a Linux device. Only headers
+ * the client actually sent are rewritten, so the passthrough shape is unchanged.
  */
 export function forwardClientCCIdentityHeaders(
   reqHeaders: Record<string, string | string[] | undefined>,
+  host: Record<string, string> = {},
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [rawName, rawValue] of Object.entries(reqHeaders)) {
@@ -423,7 +430,7 @@ export function forwardClientCCIdentityHeaders(
     if (!allowed) continue;
     const value = Array.isArray(rawValue) ? rawValue[0] : rawValue;
     if (typeof value !== 'string' || value.length === 0) continue;
-    out[name] = value;
+    out[name] = host[name] ?? value;
   }
   return out;
 }

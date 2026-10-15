@@ -26,6 +26,7 @@ import {
   reportedAccountStatus,
   rateLimitWindow,
   describeRateLimitSnapshot,
+  quotaExhaustedMessage,
 } from '../dist/pool.js';
 
 let pass = 0, fail = 0;
@@ -214,6 +215,16 @@ header('rateLimitWindow — the reset, surfaced (dario#1244)');
   check('and floors resetInMs at 0', passed.resetInMs === 0);
   const none = rateLimitWindow(EMPTY_SNAPSHOT, NOW);
   check('no reset stated → both null, not epoch 0', none.resetAt === null && none.resetInMs === null);
+}
+
+// ----------------------------------------------------------------------
+header('quotaExhaustedMessage — what the client reads');
+// ----------------------------------------------------------------------
+{
+  const at = Date.UTC(2026, 9, 15, 14, 40);
+  check('names the reset as UTC and as a wait',
+    quotaExhaustedMessage(at, at - (2 * 3600 + 13 * 60) * 1000) === 'Load is at peak, please come back later. Quota resets at 2026-10-15T14:40:00.000Z (in 2h 13m).',
+    quotaExhaustedMessage(at, at - (2 * 3600 + 13 * 60) * 1000));
 }
 
 // ----------------------------------------------------------------------

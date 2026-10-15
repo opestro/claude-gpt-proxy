@@ -144,7 +144,7 @@ async function scenario(guard) {
     check('ordinary request: marker pool_parked',
       r.headers.get('x-dario-upstream-rejection') === 'pool_parked', r.headers.get('x-dario-upstream-rejection'));
     check('ordinary request: nothing sent upstream', state.calls.length === before, `${state.calls.length - before}`);
-    check('ordinary request: the body says so', body.includes('Nothing was sent upstream'), body.slice(0, 100));
+    check('ordinary request: the body says come back later', body.includes('Load is at peak, please come back later. Quota resets at'), body.slice(0, 100));
   }
 
   header('a PINNED request is assigned its seat before the parked check — it goes upstream');

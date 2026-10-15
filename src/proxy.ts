@@ -15,7 +15,7 @@ import { CC_TOOL_DEFINITIONS_UNADVERTISABLE, CC_TEMPLATE_PROMPT_BYTES, resolveMa
 import { stampCch, hasCchSeed } from './cch.js';
 import { foldTiming, timingHeaders, timingLogFields, type RequestTiming } from './timing.js';
 import { describeTemplate, detectDrift, checkCCCompat, probeInstalledCCVersion } from './live-fingerprint.js';
-import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, parsePoolHeadroomFloor, describePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail } from './pool.js';
+import { AccountPool, computeStickyKey, parseRateLimits, modelFamily, isInAuthCooldown, authCooldownMs, accountIneligibility, reportedAccountStatus, activeParkedBuckets, reconcilePoolAccounts, resolvePoolStrategy, resolvePoolHeadroomFloor, parsePoolHeadroomFloor, describePoolStrategy, utilFreshness, rateLimitWindow, describeRateLimitSnapshot, accountAction, type PoolAccount, accountPeers, distinctAccounts, describeRejection, maskEmail, quotaExhaustedMessage } from './pool.js';
 import { backfillIdentity } from './accounts.js';
 import { PoolSync, DEFAULT_POOL_SYNC_INTERVAL_MS } from './pool-sync.js';
 import { Analytics, billingBucketFromClaim, costOfTokensFailClosed, formatUsageLogLine, SUBSCRIPTION_CLAIMS, consumerFromHeader, consumerFromBody, CONSUMER_HEADER, type RequestRecord, type RequestContinuation, CODEX_CLAIM } from './analytics.js';
@@ -239,6 +239,11 @@ function codexStickyKeyForBody(body: Buffer): string | null {
 //   logs) can read it without going through the registry. It's refreshed
 //   after every dispatch-path call that assigns a new id.
 let SESSION_ID: string = randomUUID();
+/** Headers that differ between the machines a client runs on; see ProxyOptions.singleHost. */
+const SINGLE_HOST_HEADERS = [
+  'user-agent', 'x-app', 'x-stainless-os', 'x-stainless-arch', 'x-stainless-lang',
+  'x-stainless-package-version', 'x-stainless-runtime', 'x-stainless-runtime-version',
+];
 const OS_NAME = platform === 'win32' ? 'Windows' : platform === 'darwin' ? 'MacOS' : 'Linux';
 
 // Claude Code device identity — required for Max plan billing classification.
@@ -1368,6 +1373,16 @@ interface ProxyOptions {
    */
   preserveOutputFormat?: boolean;
   /**
+   * Present every client as this host's Claude Code. A genuine CC client's
+   * `user-agent`, `x-app` and `x-stainless-*` machine and version headers are
+   * rewritten to the values dario sends for its own requests, instead of being
+   * forwarded (dario#885). Without it only `x-stainless-os` / `x-stainless-arch`
+   * are rewritten. Only headers the client sent are touched.
+   *
+   * Env: DARIO_SINGLE_HOST=1.
+   */
+  singleHost?: boolean;
+  /**
    * System-prompt mode for the Claude backend. Empirically validated as
    * unfingerprinted by the billing classifier in docs/research/system-prompt-classifier-study.md.
    *
@@ -1558,13 +1573,17 @@ export function describeAuthReject(
 }
 
 /**
- * Enrich Anthropic's unhelpful 429 "Error" body with rate limit details from headers.
+ * Rewrite a quota rejection to `quotaExhaustedMessage`; otherwise enrich
+ * Anthropic's unhelpful 429 "Error" body with rate limit details from headers.
  */
 function enrich429(body: string, headers: Headers): string {
   try {
     const parsed = JSON.parse(body) as Record<string, unknown>;
     const err = parsed.error as Record<string, unknown> | undefined;
-    if (err && (err.message === 'Error' || !err.message)) {
+    const quotaReset = headers.get('anthropic-ratelimit-unified-reset');
+    if (err && quotaReset && headers.get('anthropic-ratelimit-unified-status') === 'rejected') {
+      err.message = quotaExhaustedMessage(parseInt(quotaReset) * 1000);
+    } else if (err && (err.message === 'Error' || !err.message)) {
       const claim = headers.get('anthropic-ratelimit-unified-representative-claim') || 'unknown';
       const status = headers.get('anthropic-ratelimit-unified-status') || 'rejected';
       const util5h = headers.get('anthropic-ratelimit-unified-5h-utilization');
@@ -2331,10 +2350,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   }
 
   // Pre-build static headers — matches the set a real Claude Code client sends.
-  const staticHeaders: Record<string, string> = passthrough ? {
-    'accept': 'application/json',
-    'Content-Type': 'application/json',
-  } : {
+  const ccHeaders: Record<string, string> = {
     'accept': 'application/json',
     'Content-Type': 'application/json',
     'anthropic-dangerous-direct-browser-access': 'true',
@@ -2373,8 +2389,18 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
   //
   // The skip list lives with the overlay in cc-template.ts so it is unit-testable
   // without standing up the proxy (same reason orderHeadersForOutbound is pure).
-  if (!passthrough) {
-    overlayTemplateHeaderValues(staticHeaders, CC_TEMPLATE.header_values);
+  overlayTemplateHeaderValues(ccHeaders, CC_TEMPLATE.header_values);
+  const staticHeaders: Record<string, string> = passthrough ? {
+    'accept': 'application/json',
+    'Content-Type': 'application/json',
+  } : ccHeaders;
+  // The values a genuine CC client's forwarded identity headers are rewritten
+  // to. OS and arch always: metadata.user_id carries this host's device_id.
+  // --single-host adds the CC and runtime versions, so clients on several
+  // machines reach upstream as this one machine's Claude Code.
+  const hostIdentityHeaders: Record<string, string> = {};
+  for (const k of opts.singleHost ? SINGLE_HOST_HEADERS : ['x-stainless-os', 'x-stainless-arch']) {
+    if (ccHeaders[k]) hostIdentityHeaders[k] = ccHeaders[k];
   }
   let requestCount = 0;
   // dario#1244: the "pool parked" line is logged on the transition into the
@@ -3827,7 +3853,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         res.end(JSON.stringify({
           error: {
             type: 'rate_limit_error',
-            message: `All ${pool.size} pool seat${pool.size === 1 ? '' : 's'} are over their rate-limit windows; the earliest resets in ${retryAfterSec}s. Nothing was sent upstream.`,
+            message: quotaExhaustedMessage(untilMs),
           },
           reason: POOL_PARKED,
         }));
@@ -3874,7 +3900,7 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
         res.end(JSON.stringify({
           error: {
             type: 'rate_limit_error',
-            message: `All configured providers (${providers.join(', ')}) are rate-limited; retry in ${retryAfterSec}s.`,
+            message: quotaExhaustedMessage(Date.now() + retryAfterSec * 1000),
           },
           reason: ALL_PROVIDERS_RATE_LIMITED,
         }));
@@ -5396,7 +5422,10 @@ export async function startProxy(opts: ProxyOptions = {}): Promise<void> {
       // over template values, and BEFORE the dario-owned block below so auth,
       // session rotation and the merged beta set still win over the client.
       const forwardedIdentity = (passthrough || genuineCCRequest)
-        ? forwardClientCCIdentityHeaders(req.headers as Record<string, string | string[] | undefined>)
+        ? forwardClientCCIdentityHeaders(
+            req.headers as Record<string, string | string[] | undefined>,
+            hostIdentityHeaders,
+          )
         : {};
       const headers: Record<string, string> = {
         ...staticHeaders,

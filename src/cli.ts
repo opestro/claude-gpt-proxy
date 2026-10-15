@@ -795,6 +795,11 @@ async function proxy() {
   const preserveOutputFormat = args.includes('--preserve-output-format')
     || ['1', 'true', 'yes', 'on'].includes((process.env['DARIO_PRESERVE_OUTPUT_FORMAT'] ?? '').toLowerCase());
 
+  // --single-host — every client reaches upstream as this host's Claude Code.
+  // See ProxyOptions.singleHost.
+  const singleHost = args.includes('--single-host')
+    || ['1', 'true', 'yes', 'on'].includes((process.env['DARIO_SINGLE_HOST'] ?? '').toLowerCase());
+
   // Non-loopback bind without DARIO_API_KEY turns dario into an open
   // OAuth-subscription relay for anyone on the reachable network. Refuse
   // to start rather than rely on the operator to read the startup banner.
@@ -815,7 +820,7 @@ async function proxy() {
     process.exit(1);
   }
 
-  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, midstreamContinue, ledger, traces, keys, keysPath, keySockets: keySockets.length > 0 ? keySockets : undefined });
+  await startProxy({ port, host, verbose, verboseBodies, model, fastModel, noClaudeAuth, analyticsToken, passthrough, preserveTools, hybridTools, mergeTools, noAutoDetect, strictTls, pacingMinMs, pacingJitterMs, thinkTimeBaseMs, thinkTimePerTokenMs, thinkTimeJitterMs, thinkTimeMaxMs, sessionStartMinMs, sessionStartJitterMs, stealth, drainOnClose, sessionIdleRotateMs, sessionRotateJitterMs, sessionMaxAgeMs, sessionPerClient, preserveOrchestrationTags, noLiveCapture, strictTemplate, maxConcurrent, maxQueued, queueTimeoutMs, maxConcurrentPerConsumer, shutdownGraceMs, poolStrategy, poolHeadroomFloor, poolSharedState, poolSharedStateIntervalMs, effort, maxTokens, poolFallbackModel, modelAliases, logFile, passthroughBetas, skipFields, systemPrompt, overageGuardEnabled, overageGuardBehavior, overageGuardCooldownMs, overageGuardNotifyOs, honorClientThinking, preserveOutputFormat, singleHost, midstreamContinue, ledger, traces, keys, keysPath, keySockets: keySockets.length > 0 ? keySockets : undefined });
 }
 
 /**
@@ -2445,6 +2450,13 @@ async function help() {
                              output through dario. No effect when the
                              client omits \`output_config.format\`. Env:
                              DARIO_PRESERVE_OUTPUT_FORMAT.
+
+    --single-host            Present every client as this machine's
+                             Claude Code. A Claude Code client's
+                             user-agent and x-stainless-* machine and
+                             version headers are replaced with the ones
+                             dario sends for itself. Env:
+                             DARIO_SINGLE_HOST.
 
     --upstream-proxy=URL / --via=URL
                              Route all of dario's outbound fetch
