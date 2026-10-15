@@ -64,7 +64,9 @@ export class TraceStore {
 
   static async open(dir: string = tracesDir(), tz: string = process.env['DARIO_TRACES_TZ'] || DEFAULT_TRACES_TZ, now: () => Date = () => new Date()): Promise<TraceStore> {
     traceDay(tz); // throws RangeError on an unknown zone, at startup rather than on the first request
-    const { DatabaseSync } = await import('node:sqlite');
+    const { DatabaseSync } = await import('node:sqlite').catch(() => {
+      throw new Error(`--traces needs node:sqlite (Node >= 22.13, or Bun); this is Node ${process.version}. Upgrade Node or drop --traces.`);
+    });
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const store = new TraceStore(DatabaseSync, dir, tz, now);
     store.current();
