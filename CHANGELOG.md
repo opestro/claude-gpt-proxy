@@ -18,6 +18,15 @@ and CI fails a bump that strands one.
 - **A Claude Code client on another machine no longer leaks its OS and architecture upstream.** `x-stainless-os` and `x-stainless-arch` from a genuine CC client are rewritten to the dario host's, matching the host device_id dario already puts in `metadata.user_id`. A Windows laptop behind a Linux dario announced `x-stainless-os: Windows` beside a Linux device.
 - **`dario start` and `dario stop` run the proxy in the background on a VPS.** `start` binds `0.0.0.0` by default, mints a `DARIO_API_KEY` into `~/.dario/api-key` when the environment has none, waits for `/health` and prints the base URL for both wire shapes plus the key. A proxy that dies at startup is reported with the tail of `~/.dario/dario.log` instead of exiting silently. Proxy flags pass through.
 - **`--traces` records every `/v1/` request and response in SQLite, readable at `GET /traces`.** Each row keeps the client's headers (credentials redacted) and body, the status, the response headers and the whole response, streams included, as the client received it. One file per day in `DARIO_TRACES_TZ` (default `Africa/Algiers`) under `~/.dario/traces`; the first touch after local midnight starts a new file and deletes the old one. `GET /traces` lists today's calls without bodies, and `GET /traces/<id>` returns one in full. Only the root `DARIO_API_KEY` can read them. Off by default, and needs Node >= 22.13 or Bun for `node:sqlite`.
+
+## [6.13.13] - 2026-10-14
+
+- **Claude Code 2.1.300 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.299.
+
+## [6.13.12] - 2026-10-14
+
+- **Claude Code 2.1.299 is in the supported range.** `dario doctor` and proxy startup no longer warn that it is untested, as they did for anything newer than 2.1.296.
+
 - **The Codex drift watcher's snapshot step no longer fails after opening its PR.** The pointer it leaves on an open `codex-drift` issue, and the close of an obsolete snapshot PR, now use the job token. Under the bot PAT the issue comment was refused and the step exited 1 with the PR already open (run 37999913237). The PAT needs only Contents and Pull requests.
 
 ## [6.13.11] - 2026-10-09

@@ -107,7 +107,7 @@ jobs:
       - uses: askalf/checkout-with-retry@115a6407547e9711edbc2e915838d495cad9583f  # v1.1.0
 
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 22
 
@@ -162,17 +162,29 @@ jobs:
         # rebuild-from-canonical mode, the mode every non-CC dario user
         # runs in.
         #
-        # --port=3457 (v4.6.1) — see compat-test-self-hosted.yml for the
-        # rationale. The platform runs its own dario at :3456 via docker;
-        # without --port the canary's `dario proxy` exits 0 ("already
-        # running") and the curl below silently hits the platform dario
-        # using PLATFORM credentials, producing 401s that look like
-        # classifier flips. Use :3457 so the workflow's own dist actually
-        # runs.
+        # Port: this runner is shared with long-lived dario instances. If the
+        # canary's port is taken, `dario proxy` exits 0 ("already running")
+        # and the probe below silently hits that instance with ITS
+        # credentials, producing 401s that look like classifier flips. So the
+        # port is picked free at run time and exported as CANARY_PORT.
+        # Picking a port does not reserve it, so readiness also checks that
+        # the launched process is still alive and did not report "already
+        # running".
         env:
           DARIO_NO_TOKEN_REFRESH: '1'
         run: |
-          node dist/cli.js proxy --port=3457 > proxy.log 2>&1 &
+          port="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{process.stdout.write(String(s.address().port));s.close()})')"
+          if [ -z "$port" ]; then
+            echo "::error::could not pick a free loopback port for the canary proxy"
+            exit 1
+          fi
+          if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:${port}/health"; then
+            echo "::error::port ${port} already answers HTTP. Refusing to probe a process this job did not start."
+            exit 1
+          fi
+          echo "CANARY_PORT=${port}" >> "$GITHUB_ENV"
+          echo "canary proxy port: ${port}"
+          node dist/cli.js proxy --port="$port" > proxy.log 2>&1 &
           echo $! > proxy.pid
           echo "started dario proxy with PID $(cat proxy.pid)"
 
@@ -190,12 +202,24 @@ jobs:
           ready=false
           last_code=000
           for i in $(seq 1 30); do
-            last_code=$(curl -s -o health.json -w '%{http_code}' --max-time 2 http://127.0.0.1:3457/health || echo 000)
+            last_code=$(curl -s -o health.json -w '%{http_code}' --max-time 2 "http://127.0.0.1:${port}/health" || echo 000)
             case "$last_code" in
               2??) ready=true; echo "proxy ready after ${i}s (HTTP ${last_code})"; break ;;
             esac
             sleep 1
           done
+
+          # A healthy /health is not proof it is OUR proxy: dario's EADDRINUSE
+          # path prints "already running" and exits 0, leaving whatever holds
+          # the port to answer the probe with someone else's credentials.
+          if [ "$ready" = "true" ]; then
+            sleep 1
+            if ! kill -0 "$(cat proxy.pid)" 2>/dev/null || grep -q 'already running on' proxy.log; then
+              echo "::error::the canary proxy (PID $(cat proxy.pid)) is not the process serving port ${port}; another dario holds it. Not a classifier verdict."
+              cat proxy.log
+              exit 1
+            fi
+          fi
 
           if [ "$ready" = "true" ]; then
             exit 0
@@ -239,11 +263,11 @@ jobs:
           #      if Sonnet/Haiku comes back, Anthropic silently downgraded us
           #      under load. Probing the most-expensive model makes that
           #      substitution detectable (you can't catch a downgrade by
-          #      asking for the cheap model). :3457 matches the Start step.
+          #      asking for the cheap model). CANARY_PORT is set by the Start step.
           response_headers=$(mktemp)
           response_body=$(mktemp)
           curl -sS -D "$response_headers" -o "$response_body" \
-            -X POST http://127.0.0.1:3457/v1/messages \
+            -X POST "http://127.0.0.1:${CANARY_PORT}/v1/messages" \
             -H "Content-Type: application/json" \
             -H "anthropic-version: 2023-06-01" \
             -H "x-api-key: dario" \
@@ -387,7 +411,7 @@ jobs:
       - name: Track the blocked canary
         if: always() && (steps.startup.outputs.blocked != '' || steps.probe.outputs.blocked != '')
         id: blocked
-        uses: askalf/ci/actions/drift-report@db7bc038315e4dec6f290fcab2aa802db64f8d73 # main 2026-10-11, askalf/ci#44
+        uses: askalf/ci/actions/drift-report@57c86242f0d4066cac43b2300ef74b91b07858f6 # main 2026-10-15, askalf/ci#54
         with:
           label: cc-canary-blocked
           label-color: FBCA04
@@ -417,7 +441,7 @@ jobs:
       # the tracking issue closes, with its escalation clock, whichever verdict this run produced.
       - name: Close the blocked tracker
         if: always() && steps.probe.outputs.status != ''
-        uses: askalf/ci/actions/drift-report@db7bc038315e4dec6f290fcab2aa802db64f8d73 # main 2026-10-11, askalf/ci#44
+        uses: askalf/ci/actions/drift-report@57c86242f0d4066cac43b2300ef74b91b07858f6 # main 2026-10-15, askalf/ci#54
         with:
           label: cc-canary-blocked
           close: true
@@ -482,7 +506,7 @@ jobs:
       # closed on the first pass.
       - name: Report
         if: always() && steps.probe.outputs.status != ''
-        uses: askalf/ci/actions/drift-report@db7bc038315e4dec6f290fcab2aa802db64f8d73 # main 2026-10-11, askalf/ci#44
+        uses: askalf/ci/actions/drift-report@57c86242f0d4066cac43b2300ef74b91b07858f6 # main 2026-10-15, askalf/ci#54
         with:
           label: cc-billing-canary
           label-color: B60205
