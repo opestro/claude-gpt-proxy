@@ -81,7 +81,7 @@ const DEFAULT_HOST = '127.0.0.1';
 // Used to decide whether to warn at startup about binding to a reachable
 // interface — binding anywhere else means other machines can reach the
 // proxy and should only be done with DARIO_API_KEY set.
-function isLoopbackHost(host: string): boolean {
+export function isLoopbackHost(host: string): boolean {
   if (host === '127.0.0.1' || host === '::1' || host === 'localhost') return true;
   return host.startsWith('127.');
 }

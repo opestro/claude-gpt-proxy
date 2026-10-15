@@ -54,7 +54,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { startAutoOAuthFlow, startManualOAuthFlow, detectHeadlessEnvironment, getStatus, refreshTokens, loadCredentials, readLineFromStdin, parseManualPaste } from './oauth.js';
-import { startProxy, sanitizeError, parseModelAliasSpecs } from './proxy.js';
+import { startProxy, sanitizeError, parseModelAliasSpecs, isLoopbackHost } from './proxy.js';
 import { VALID_EFFORT_VALUES, type EffortValue } from './cc-template.js';
 import { grantAge, describeGrantAge } from './refresh-grant.js';
 import { listAccountAliases, loadAllAccounts, addAccountViaOAuth, addAccountViaManualOAuth, addAccountFromKeychain, KeychainImportError, removeAccount, ensureLoginCredentialsInPool, resyncLoginFromCredentialsIfStale, MIGRATED_LOGIN_ALIAS } from './accounts.js';
@@ -1363,7 +1363,7 @@ async function codexListLive(): Promise<boolean> {
     ?? (process.env['DARIO_PORT'] ? parseInt(process.env['DARIO_PORT']!, 10) : undefined)
     ?? fileCfg.port ?? 3456;
   const headers: Record<string, string> = {};
-  if (process.env['DARIO_API_KEY']) headers['x-api-key'] = process.env['DARIO_API_KEY']!;
+  { const key = localProxyKey(); if (key) headers['x-api-key'] = key; }
   let payload: { accounts?: LiveCodexSeat[] } | null = null;
   try {
     const res = await fetch(`http://127.0.0.1:${port}/codex`, { headers, signal: AbortSignal.timeout(3000) });
@@ -1385,7 +1385,7 @@ async function accountsListLive(): Promise<boolean> {
     ?? (process.env['DARIO_PORT'] ? parseInt(process.env['DARIO_PORT']!, 10) : undefined)
     ?? fileCfg.port ?? 3456;
   const headers: Record<string, string> = {};
-  if (process.env['DARIO_API_KEY']) headers['x-api-key'] = process.env['DARIO_API_KEY']!;
+  { const key = localProxyKey(); if (key) headers['x-api-key'] = key; }
   let payload: LivePayload | null = null;
   try {
     const res = await fetch(`http://127.0.0.1:${port}/accounts`, { headers, signal: AbortSignal.timeout(3000) });
@@ -1600,7 +1600,7 @@ async function accounts() {
     const port = (portArg ? parseInt(portArg.split('=')[1]!, 10) : undefined)
       ?? (process.env['DARIO_PORT'] ? parseInt(process.env['DARIO_PORT']!, 10) : undefined)
       ?? fileCfg.port ?? 3456;
-    const apiKey = process.env['DARIO_API_KEY'];
+    const apiKey = localProxyKey();
     const adminToken = process.env['DARIO_ADMIN_TOKEN'] || apiKey;
     if (!adminToken) {
       console.error('[dario] accounts check needs DARIO_ADMIN_TOKEN (or DARIO_API_KEY) in the environment, and the proxy running with DARIO_ADMIN=1.');
@@ -2881,7 +2881,7 @@ async function usage() {
   // A proxy with DARIO_API_KEY set gates /analytics too; present the key when
   // the environment has it, as `accounts list --live` does (v6.8).
   const usageHeaders: Record<string, string> = {};
-  if (process.env['DARIO_API_KEY']) usageHeaders['x-api-key'] = process.env['DARIO_API_KEY']!;
+  { const key = localProxyKey(); if (key) usageHeaders['x-api-key'] = key; }
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(3000), headers: usageHeaders });
     if (!res.ok) {
@@ -3067,7 +3067,7 @@ async function tui() {
   const apiKeyArg = args.find((a) => a.startsWith('--api-key='));
   const apiKey = apiKeyArg
     ? apiKeyArg.split('=')[1]
-    : (process.env['DARIO_API_KEY'] || undefined);
+    : localProxyKey();
   const { startTuiApp } = await import('./tui/tui-app.js');
   await startTuiApp({
     version: pkgVersion(),
@@ -3175,6 +3175,12 @@ const DAEMON_PID_PATH = join(homedir(), '.dario', 'dario.pid');
 const DAEMON_LOG_PATH = join(homedir(), '.dario', 'dario.log');
 const DAEMON_KEY_PATH = join(homedir(), '.dario', 'api-key');
 
+/** The key a CLI command presents to the local proxy: DARIO_API_KEY, else the one `dario start` saved. */
+function localProxyKey(): string | undefined {
+  if (process.env['DARIO_API_KEY']) return process.env['DARIO_API_KEY'];
+  try { return readFileSync(DAEMON_KEY_PATH, 'utf8').trim() || undefined; } catch { return undefined; }
+}
+
 function daemonPid(): number | null {
   try {
     const pid = parseInt(readFileSync(DAEMON_PID_PATH, 'utf8'), 10);
@@ -3256,8 +3262,11 @@ async function start(): Promise<void> {
   console.log('');
   console.log(`  Claude Code:  ANTHROPIC_BASE_URL=${baseUrl} ANTHROPIC_API_KEY=<key> claude`);
   console.log(`  OpenAI SDKs:  OPENAI_BASE_URL=${baseUrl}/v1 OPENAI_API_KEY=<key>`);
-  console.log('  One key per device: `dario keys create <name>`. Open the port in the VPS firewall;');
-  console.log('  the traffic is plain HTTP, so put a TLS reverse proxy in front for anything beyond testing.');
+  console.log('  One key per device: `dario keys create <name>`.');
+  if (!isLoopbackHost(host)) {
+    console.log('  Open the port in the VPS firewall; the traffic is plain HTTP, so put a TLS reverse');
+    console.log('  proxy in front for anything beyond testing.');
+  }
   console.log('');
 }
 
